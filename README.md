@@ -59,3 +59,8 @@ git clone [https://github.com/harshitdubey6306-alt/esp32-mpu6050-flight-sim.git]
 - **`NO_SENSOR_CHECK_WIRES` in the HUD:** Verify `SDA` (GPIO 21) and `SCL` (GPIO 22), confirm header pins are properly soldered, and try powering `VCC` from `VIN`/`5V` if the onboard MPU6050 LED is not glowing.
 - **Port won't open:** Make sure Arduino IDE's Serial Monitor is closed and no other browser tab is connected to the same COM port.
 - **Web Serial not supported:** Use desktop Google Chrome, Microsoft Edge, or Brave (Firefox and mobile browsers do not support Web Serial).
+
+- 
+
+https://github.com/user-attachments/assets/e66f2e0e-c424-4eb2-9288-b4444b30a423
+
