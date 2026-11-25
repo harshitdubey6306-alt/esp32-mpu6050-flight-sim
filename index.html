@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32 + MPU6050 Flight Simulator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { overflow: hidden; background: #0f172a; color: #f8fafc; }
+    canvas { display: block; }
+
+    #hud {
+      position: fixed; top: 20px; left: 20px; right: 20px;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      pointer-events: none; z-index: 10;
+    }
+    .panel {
+      background: rgba(15, 23, 42, 0.78);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      padding: 14px 20px;
+      pointer-events: auto;
+    }
+    h1 { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; color: #38bdf8; margin-bottom: 6px; }
+    .stats { font-size: 14px; color: #cbd5e1; line-height: 1.6; }
+    .stats span { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    .control-row {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 13px;
+      color: #cbd5e1;
+    }
+    .control-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .control-header span {
+      color: #38bdf8;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #38bdf8;
+      cursor: pointer;
+    }
+
+    #rawSerial {
+      margin-top: 8px;
+      padding: 5px 8px;
+      background: rgba(2, 6, 23, 0.7);
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #4ade80;
+      max-width: 290px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .btn-group { display: flex; gap: 10px; margin-top: 10px; }
+    button {
+      background: #0284c7; color: #fff; border: none; border-radius: 8px;
+      padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #0369a1; }
+    button.secondary { background: #334155; }
+    button.secondary:hover { background: #475569; }
+    button:disabled { background: #1e293b; color: #64748b; cursor: not-allowed; }
+
+    #score-box { text-align: right; }
+    #score { font-size: 36px; font-weight: 800; color: #facc15; line-height: 1; }
+    #status { font-size: 12px; color: #94a3b8; margin-top: 6px; }
+
+    #overlay {
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.8);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 20; text-align: center; padding: 20px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h2 { font-size: 32px; margin-bottom: 10px; color: #38bdf8; }
+    #overlay p { max-width: 440px; color: #cbd5e1; margin-bottom: 20px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+
+  <div id="hud">
+    <div class="panel">
+      <h1>MPU6050 FLIGHT CONTROLLER</h1>
+      <div class="stats">
+        Roll: <span id="rollVal">0.0°</span> &nbsp;|&nbsp; Pitch: <span id="pitchVal">0.0°</span><br>
+        Mode: <span id="modeVal">Keyboard (Arrow Keys)</span>
+      </div>
+
+      <div class="control-row">
+        <div class="control-header">
+          <label for="speedSlider">Flight Speed</label>
+          <span id="speedVal">35%</span>
+        </div>
+        <input type="range" id="speedSlider" min="0.10" max="1.20" step="0.05" value="0.35" />
+      </div>
+
+      <div id="rawSerial">Raw: waiting for ESP32...</div>
+      <div class="btn-group">
+        <button id="connectBtn">Connect ESP32</button>
+        <button id="calibrateBtn" class="secondary">Zero / Calibrate</button>
+      </div>
+    </div>
+
+    <div id="score-box" class="panel">
+      <div style="font-size:12px; color:#94a3b8; letter-spacing:1px;">RINGS CLEARED</div>
+      <div id="score">0</div>
+      <div id="status">Hold sensor flat & click Zero</div>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <h2>ESP32 + MPU6050 Sky Flyer</h2>
+    <p>Plug in your ESP32S via USB, close Arduino Serial Monitor, and click <strong>Connect ESP32</strong>. Tilt the sensor to steer through the golden rings! (You can also test with Arrow Keys.)</p>
+    <div class="btn-group">
+      <button id="startConnectBtn">Connect ESP32 & Fly</button>
+      <button id="startKeyboardBtn" class="secondary">Test with Keyboard</button>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // --- SCENE SETUP ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x7dd3fc);
+    scene.fog = new THREE.FogExp2(0x7dd3fc, 0.0045);
+
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 400);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x3b82f6, 0.9);
+    scene.add(hemiLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(30, 60, 40);
+    scene.add(dirLight);
+
+    // Ocean / Ground Plane
+    const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+    const groundMat = new THREE.MeshLambertMaterial({ color: 0x0284c7 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -25;
+    scene.add(ground);
+
+    // --- BUILD AIRPLANE ---
+    const plane = new THREE.Group();
+
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.3 });
+    const wingMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.4 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+
+    // Fuselage
+    const fuselage = new THREE.Mesh(new THREE.ConeGeometry(0.6, 3.6, 12), bodyMat);
+    fuselage.rotation.x = -Math.PI / 2;
+    plane.add(fuselage);
+
+    // Main Wings
+    const mainWing = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.12, 0.9), wingMat);
+    mainWing.position.set(0, 0.05, -0.2);
+    plane.add(mainWing);
+
+    // Tail Wings
+    const tailWing = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.5), wingMat);
+    tailWing.position.set(0, 0.1, 1.4);
+    plane.add(tailWing);
+
+    const rudder = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.8, 0.5), bodyMat);
+    rudder.position.set(0, 0.45, 1.4);
+    plane.add(rudder);
+
+    // Propeller
+    const propeller = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.14, 0.06), darkMat);
+    propeller.position.set(0, 0, -1.85);
+    plane.add(propeller);
+
+    scene.add(plane);
+
+    // --- CLOUDS & TARGET RINGS ---
+    const clouds = [];
+    const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+    for (let i = 0; i < 45; i++) {
+      const cloud = new THREE.Mesh(new THREE.DodecahedronGeometry(Math.random() * 3 + 2, 1), cloudMat);
+      cloud.position.set((Math.random() - 0.5) * 220, Math.random() * 45 - 5, -Math.random() * 350);
+      scene.add(cloud);
+      clouds.push(cloud);
+    }
+
+    const rings = [];
+    const ringGeo = new THREE.TorusGeometry(3.5, 0.35, 12, 32);
+    const ringMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xca8a04, emissiveIntensity: 0.4 });
+    let nextRingZ = -60;
+
+    function spawnRing(zPos) {
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.set((Math.random() - 0.5) * 45, Math.random() * 22 - 6, zPos);
+      ring.userData.passed = false;
+      scene.add(ring);
+      rings.push(ring);
+    }
+    for (let i = 0; i < 6; i++) {
+      spawnRing(nextRingZ);
+      nextRingZ -= 55;
+    }
+
+    // --- SENSOR & CONTROL STATE ---
+    let rawRoll = 0, rawPitch = 0;
+    let offsetRoll = 0, offsetPitch = 0;
+    let targetRoll = 0, targetPitch = 0;
+    let smoothRoll = 0, smoothPitch = 0;
+    let score = 0;
+    let serialConnected = false;
+    let flightSpeed = 0.35;
+
+    const speedSlider = document.getElementById('speedSlider');
+    const speedVal = document.getElementById('speedVal');
+    speedSlider.addEventListener('input', (e) => {
+      flightSpeed = parseFloat(e.target.value);
+      speedVal.textContent = Math.round(flightSpeed * 100) + '%';
+    });
+    speedSlider.addEventListener('change', () => speedSlider.blur());
+
+    const keys = {};
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function calibrate() {
+      offsetRoll = rawRoll;
+      offsetPitch = rawPitch;
+      document.getElementById('status').textContent = 'Calibrated! Center set.';
+    }
+    document.getElementById('calibrateBtn').addEventListener('click', calibrate);
+
+    // --- WEB SERIAL CONNECTION ---
+    async function connectSerial() {
+      if (!('serial' in navigator)) {
+        alert('Web Serial API not supported in this browser. Please use Chrome or Edge on desktop.');
+        return;
+      }
+      try {
+        const port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        // Release GPIO 0 and reset EN cleanly into normal firmware execution mode
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+        await new Promise(r => setTimeout(r, 100));
+        await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+
+        serialConnected = true;
+        document.getElementById('overlay').classList.add('hidden');
+        document.getElementById('modeVal').textContent = 'ESP32 USB Serial';
+        document.getElementById('connectBtn').disabled = true;
+        document.getElementById('connectBtn').textContent = 'Connected';
+        document.getElementById('status').textContent = 'Hold sensor flat & click Zero';
+        document.getElementById('rawSerial').textContent = 'Raw: port open, reading...';
+
+        const textDecoder = new TextDecoderStream();
+        port.readable.pipeTo(textDecoder.writable);
+        const reader = textDecoder.readable.getReader();
+
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += value;
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            const clean = line.trim();
+            if (!clean) continue;
+
+            const rawEl = document.getElementById('rawSerial');
+            rawEl.textContent = 'Raw: ' + clean;
+            rawEl.style.color = clean.includes('ERR') || clean.includes('NOT_FOUND') || clean.includes('download') ? '#f87171' : '#4ade80';
+
+            const parts = clean.split(',');
+            if (parts.length === 2) {
+              const r = parseFloat(parts[0]);
+              const p = parseFloat(parts[1]);
+              if (!isNaN(r) && !isNaN(p)) {
+                rawRoll = r;
+                rawPitch = p;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        document.getElementById('rawSerial').textContent = 'Error: ' + err.message;
+        document.getElementById('rawSerial').style.color = '#f87171';
+        document.getElementById('status').textContent = 'Connection failed or port busy.';
+      }
+    }
+
+    document.getElementById('connectBtn').addEventListener('click', connectSerial);
+    document.getElementById('startConnectBtn').addEventListener('click', connectSerial);
+    document.getElementById('startKeyboardBtn').addEventListener('click', () => {
+      document.getElementById('overlay').classList.add('hidden');
+    });
+
+    // --- MAIN ANIMATION LOOP ---
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (serialConnected) {
+        targetRoll = Math.max(-45, Math.min(45, rawRoll - offsetRoll));
+        targetPitch = Math.max(-45, Math.min(45, rawPitch - offsetPitch));
+      } else {
+        targetRoll = (keys['ArrowRight'] ? 30 : 0) - (keys['ArrowLeft'] ? 30 : 0);
+        targetPitch = (keys['ArrowUp'] ? 25 : 0) - (keys['ArrowDown'] ? 25 : 0);
+      }
+
+      // Smooth interpolation
+      smoothRoll += (targetRoll - smoothRoll) * 0.12;
+      smoothPitch += (targetPitch - smoothPitch) * 0.12;
+
+      document.getElementById('rollVal').textContent = smoothRoll.toFixed(1) + '°';
+      document.getElementById('pitchVal').textContent = smoothPitch.toFixed(1) + '°';
+
+      // Apply orientation & movement to airplane
+      const rollRad = THREE.MathUtils.degToRad(smoothRoll);
+      const pitchRad = THREE.MathUtils.degToRad(smoothPitch);
+
+      plane.rotation.z = -rollRad;
+      plane.rotation.x = -pitchRad;
+      plane.rotation.y = -rollRad * 0.35;
+
+      // Move plane horizontally & vertically within sky bounds
+      plane.position.x += Math.sin(rollRad) * 0.55;
+      plane.position.y -= Math.sin(pitchRad) * 0.45;
+
+      plane.position.x = Math.max(-35, Math.min(35, plane.position.x));
+      plane.position.y = Math.max(-18, Math.min(25, plane.position.y));
+
+      // Scale propeller spin with throttle speed
+      propeller.rotation.z += 0.25 + flightSpeed * 0.6;
+
+      // Move clouds
+      for (const cloud of clouds) {
+        cloud.position.z += flightSpeed;
+        if (cloud.position.z > 20) {
+          cloud.position.z = -350;
+          cloud.position.x = (Math.random() - 0.5) * 220;
+        }
+      }
+
+      // Move rings & check collision
+      for (let i = rings.length - 1; i >= 0; i--) {
+        const ring = rings[i];
+        ring.position.z += flightSpeed;
+        ring.rotation.z += 0.02;
+
+        if (!ring.userData.passed && Math.abs(ring.position.z - plane.position.z) < 1.5) {
+          const dist = Math.hypot(ring.position.x - plane.position.x, ring.position.y - plane.position.y);
+          if (dist < 4.2) {
+            ring.userData.passed = true;
+            ring.material = new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a });
+            score++;
+            document.getElementById('score').textContent = score;
+          }
+        }
+
+        if (ring.position.z > 15) {
+          scene.remove(ring);
+          rings.splice(i, 1);
+          spawnRing(-310);
+        }
+      }
+
+      // Smooth follow camera
+      camera.position.x += (plane.position.x * 0.75 - camera.position.x) * 0.08;
+      camera.position.y += (plane.position.y * 0.75 + 2.8 - camera.position.y) * 0.08;
+      camera.position.z = 10;
+      camera.lookAt(plane.position.x * 0.85, plane.position.y * 0.85, -15);
+
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+  </script>
+</body>
+</html>
